@@ -1,45 +1,52 @@
-# 乐透智选 · 开奖数据后端（定时抓取）
+# 乐透智选 · 开奖数据（定时抓取 → GitHub → jsDelivr）
 
-解决浏览器跨域（CORS）拿不到官方开奖数据的问题：把「抓取」搬到服务端（GitHub Actions 定时任务），
-生成一个 `lottery_data.json`，前端通过 jsDelivr CDN 读取（jsDelivr 自带 `Access-Control-Allow-Origin: *`，浏览器可直接跨域）。
+解决两个问题：
+1. 浏览器直连官方接口被 CORS 拦截；
+2. GitHub Actions（海外 IP）被体彩接口 **HTTP 567** 拦截（地域限制）。
 
-## 文件说明
+方案：用**你本机（国内 IP）的 Windows 计划任务**每天抓一次，推到 GitHub，前端经 jsDelivr（自带 CORS 头）读取。
+
+## 架构
+
+```
+[你的电脑·国内 IP] --每天21:35--> fetch_lottery.py --> lottery_data.json --> git push --> GitHub 仓库
+                                                                                          |
+前端(秒哒) --fetch--> jsDelivr CDN  https://cdn.jsdelivr.net/gh/musketeer0/lottery-data@main/lottery_data.json
+```
+
+## 文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `fetch_lottery.py` | 抓取大乐透 + 双色球官方数据，输出 `lottery_data.json`（仅用 Python 标准库） |
-| `.github/workflows/update-data.yml` | 定时任务：每天北京时间 21:30 自动运行脚本并提交数据 |
-| `lottery_data.json` | 抓取结果（由脚本生成，已随本次提交） |
+| `fetch_lottery.py` | 抓取大乐透 + 双色球官方数据，输出 `lottery_data.json`（仅标准库） |
+| `update_data.bat` | 计划任务入口：抓取 → git 提交 → 推送到 GitHub |
+| `lottery_data.json` | 抓取结果（前端读取的数据） |
 
-## 数据源
+## 数据源（需国内 IP）
 
-- **大乐透（体彩）**：`webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry?gameNo=85`
-  - ⚠️ 必须带请求头 `Referer: https://www.lottery.gov.cn/`，否则返回反爬 HTML 而非 JSON。
-- **双色球（福彩）**：`www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice?name=ssq`
-  - 直接 GET 返回 JSON。
+- **大乐透**：`webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry?gameNo=85`，须带 `Referer: https://www.lottery.gov.cn/`
+- **双色球**：`www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice?name=ssq`
 
-> 服务端请求**没有 CORS 限制**（CORS 是浏览器专属的安全机制），所以放在 GitHub Actions 里跑没有任何跨域问题。
+> 两个接口都对海外 IP 有地域限制（体彩返回 HTTP 567），所以必须在国内 IP 下运行。这也是为什么不用 GitHub Actions 而用本机计划任务。
 
-## 部署步骤
+## 定时任务
 
-1. 在 GitHub 新建一个**公开**仓库（例如 `lottery-data`）。
-2. 把本目录的 `fetch_lottery.py`、`.github/workflows/update-data.yml`、`lottery_data.json` 三个文件推送到仓库根目录（`.github/workflows/` 在根目录下）。
-3. 打开仓库 **Settings → Actions → General**，确认 Workflow permissions 勾选 **Read and write permissions**（工作流里已声明 `permissions: contents: write`，一般无需额外改动）。
-4. 打开 **Actions** 页，手动跑一次 `Update lottery data` 验证能成功生成/更新数据。
+已创建 Windows 计划任务 `LotteryDataUpdate`，每天 **21:35** 运行 `update_data.bat`（覆盖当天开奖）。
 
-## 让前端读到数据
+- 查看：`schtasks /query /tn LotteryDataUpdate`
+- 手动跑一次：直接双击 `update_data.bat`，或 `schtasks /run /tn LotteryDataUpdate`
+- 删除：`schtasks /delete /tn LotteryDataUpdate /f`
 
-前端 HTML 里有一行（在脚本的 `loadLiveData` 上方）：
+> 计划任务只在「用户已登录」时运行；关机/未登录当天会跳过，下次到点再跑，数据最坏延迟一天，不影响使用。
 
-```js
-var DATA_JSON_URL='https://cdn.jsdelivr.net/gh/YOUR_USERNAME/YOUR_REPO@main/lottery_data.json';
-```
+## 前端
 
-把 `YOUR_USERNAME/YOUR_REPO` 换成你的 GitHub 用户名和仓库名即可。之后打开页面会自动从该地址读取最新数据；
-读取失败会自动回退到 HTML 内置数据，不影响使用。
+前端 HTML 的 `DATA_JSON_URL` 已指向：
+`https://cdn.jsdelivr.net/gh/musketeer0/lottery-data@main/lottery_data.json`
 
-## 常见问题
+jsDelivr 对 `@main` 有约 12 小时缓存；想更快刷新可用 raw 直链（缓存更短）：
+`https://raw.githubusercontent.com/musketeer0/lottery-data/main/lottery_data.json`
 
-- **jsDelivr 有缓存**：jsDelivr 对 `@main` 的缓存约 12 小时，最长 24 小时。若想更快看到新数据，可用 `@latest`（仍需等待刷新）或直接改用 GitHub Raw（`https://raw.githubusercontent.com/USER/REPO/main/lottery_data.json`，也带 CORS 头，缓存更短）。
-- **每天只抓一次够不够**：大乐透周一/三/六开奖，双色球周二/四/日开奖；每天 21:30 抓取已覆盖当天开奖。如需更频繁，把 cron 改成每天多次即可。
-- **想不用 GitHub**：也可以用任何能跑 Python 的服务器/云函数（如 Cloudflare Worker、Vercel、自建 VPS）运行 `fetch_lottery.py`，把 `lottery_data.json` 放到任意带 CORS 头的静态托管即可。
+## 安全提示
+
+本机 git 远程地址内嵌了 GitHub token，用完后建议去 GitHub 上 Revoke 该 token，或换成专属最小权限 token。
