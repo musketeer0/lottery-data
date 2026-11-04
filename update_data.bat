@@ -14,9 +14,23 @@ if errorlevel 1 goto fail
 if not errorlevel 1 goto nochange
 
 %GIT% commit -m "auto update %date%" >> update.log 2>&1
+
+set RETRY=0
+:push
 %GIT% push origin main >> update.log 2>&1
+if not errorlevel 1 goto pushed
+set /a RETRY+=1
+if %RETRY% geq 3 goto pushfail
+ping -n 16 127.0.0.1 >nul
+goto push
+
+:pushed
 echo [%date% %time%] updated-and-pushed >> update.log
 exit /b 0
+
+:pushfail
+echo [%date% %time%] PUSH-FAILED >> update.log
+exit /b 1
 
 :nochange
 echo [%date% %time%] no-change >> update.log
